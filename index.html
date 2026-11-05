@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0e1712">
+<title>Jinu The Kallukudiyan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap">
+<style>
+/* Layout: one-screen arcade. HUD strip on top, canvas fills the rest, overlay card for start/end. Single deliberate night-forest look. */
+:root{
+  --night:#0e1712; --forest:#16261c; --leaf:#244233;
+  --saffron:#f3a83b; --coconut:#86d07a; --amber:#e0663f; --ink:#f4ead6; --muted:#9fb3a3;
+  --display:"Baloo 2", "Trebuchet MS", system-ui, sans-serif;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--night);color:var(--ink);font-family:var(--display);overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+.app{height:100%;display:flex;flex-direction:column;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:10px;box-sizing:border-box;gap:10px;max-width:640px;margin:0 auto}
+.hud{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:14px}
+.hud[data-off] {visibility:hidden}
+.stat{line-height:1}
+.stat b{display:block;font-size:1.5rem;font-weight:800;font-variant-numeric:tabular-nums}
+.stat span{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.meter{min-width:0}
+.meter span{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.bar{height:12px;border-radius:6px;background:var(--leaf);overflow:hidden;margin-top:4px}
+.fill{height:100%;width:100%;background:linear-gradient(90deg,var(--amber),var(--saffron),var(--coconut));transition:width .15s}
+.stage{position:relative;flex:1;min-height:0;border-radius:14px;overflow:hidden;background:var(--forest)}
+canvas{display:block;width:100%;height:100%}
+.overlay{position:absolute;inset:0;display:grid;place-items:center;background:rgba(14,23,18,.8);padding:16px}
+.card{max-width:340px;text-align:center;display:grid;gap:10px}
+.card h1{margin:0;font-size:2.2rem;line-height:1;font-weight:800;color:var(--saffron);text-wrap:balance}
+.card p{margin:0;font-size:1rem;line-height:1.4}
+.card .small{font-size:.85rem;color:var(--muted)}
+button{font:inherit;font-weight:800;font-size:1.1rem;border:0;border-radius:999px;padding:12px 28px;background:var(--saffron);color:var(--night);cursor:pointer;justify-self:center}
+button:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+.skip{position:absolute;right:10px;bottom:10px;font-size:.85rem;padding:6px 14px;background:rgba(244,234,214,.15);color:var(--ink)}
+.toast{position:absolute;left:50%;top:14px;transform:translateX(-50%);font-weight:700;font-size:1rem;background:rgba(14,23,18,.88);padding:6px 14px;border-radius:999px;white-space:nowrap;opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.on{opacity:1}
+</style>
+
+<style>
+:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}
+html,body{margin:0;overscroll-behavior:none}
+body{position:fixed;inset:0}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="hud" id="hud" data-off>
+    <div class="stat"><b id="dist">0</b><span>Metres</span></div>
+    <div class="meter"><span>Gap from Honeybee</span><div class="bar"><div class="fill" id="fill"></div></div></div>
+    <div class="stat" style="text-align:right"><b id="score">0</b><span>Ilaneer</span></div>
+  </div>
+  <div class="stage" id="stage">
+    <canvas id="c"></canvas>
+    <div class="toast" id="toast"></div>
+    <button class="skip" id="skip" hidden>Skip ›</button>
+    <div class="overlay" id="overlay">
+      <div class="card" id="card">
+        <h1>Jinu The Kallukudiyan</h1>
+        <p>Jinu is on his 41-day vratham. Fresh from the temple, he wanders to Kudi, and a giant bottle called Honeybee comes after him.</p>
+        <p>Switch lanes, dodge the traffic, grab tender coconuts, and get Jinu back to the temple. A blue sanitizer steadies his hands and gives him a speed boost.</p>
+        <p class="small">Phone: swipe or tap left/right. PC: arrow keys or A/D.</p>
+        <button id="go">Start the story</button>
+        <p class="small" id="best"></p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(()=>{
+const cv=document.getElementById('c'),ctx=cv.getContext('2d'),stage=document.getElementById('stage');
+const $=id=>document.getElementById(id);
+let W=0,H=0;
+function resize(){const d=Math.min(devicePixelRatio||1,2);W=stage.clientWidth;H=stage.clientHeight;cv.width=W*d;cv.height=H*d;ctx.setTransform(d,0,0,d,0,0)}
+addEventListener('resize',resize);resize();
+
+const GOAL=2000;
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const hitLines=["Honeybee is closing in!","Jinu, just one peg... - Honeybee","Hands shaking, lane missed!","Brrrrr, the bottle is near!"];
+const coconutLines=["Ilaneer power!","Liver says thanks","Speed boost from the coconut","Jinu stays strong"];
+let best=0;try{best=+localStorage.getItem('jinuBest')||0}catch(e){}
+function showBest(){const b=$('best');if(b)b.textContent=best?`Best run: ${best} m`:''}
+showBest();
+
+let toastT=0;
+function toast(t){const el=$('toast');el.textContent=t;el.classList.add('on');clearTimeout(toastT);toastT=setTimeout(()=>el.classList.remove('on'),1300)}
+
+/* ---------- drawing helpers ---------- */
+function font(px,w=800){return `${w} ${px}px "Baloo 2", sans-serif`}
+function bubble(x,y,text,size=16){
+  ctx.font=font(size);const tw=ctx.measureText(text).width;const pw=tw+24,ph=size+18;
+  let bx=Math.max(8,Math.min(W-pw-8,x-pw/2)),by=y-ph;
+  ctx.fillStyle='#f4ead6';ctx.beginPath();ctx.roundRect(bx,by,pw,ph,12);ctx.fill();
+  ctx.beginPath();ctx.moveTo(x-8,by+ph-1);ctx.lineTo(x+8,by+ph-1);ctx.lineTo(x,by+ph+10);ctx.fill();
+  ctx.fillStyle='#0e1712';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(text,bx+pw/2,by+ph/2+1);
+}
+function caption(text,y,size=26,color='#f3a83b'){ctx.font=font(size);ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle=color;ctx.fillText(text,W/2,y)}
+
+/* Jinu: black mundu & shirt, beard, sandal mark. shake = hand shiver amount, walk = leg phase */
+function drawJinu(x,y,s=1,shake=0,walk=0){
+  ctx.save();ctx.translate(x,y);ctx.scale(s,s);
+  const lg=Math.sin(walk)*6;
+  ctx.strokeStyle='#c98d5e';ctx.lineWidth=6;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(-7,34);ctx.lineTo(-7+lg,48);ctx.moveTo(7,34);ctx.lineTo(7-lg,48);ctx.stroke();
+  ctx.fillStyle='#0a0d0b';ctx.beginPath();ctx.roundRect(-18,-6,36,44,8);ctx.fill();
+  ctx.fillStyle='#262e29';ctx.fillRect(-18,14,36,3);
+  const a=(Math.random()-.5)*shake,b=(Math.random()-.5)*shake;
+  ctx.strokeStyle='#c98d5e';ctx.lineWidth=6;
+  ctx.beginPath();ctx.moveTo(-17,0);ctx.lineTo(-28+a,18+b);ctx.moveTo(17,0);ctx.lineTo(28-b,18+a);ctx.stroke();
+  ctx.fillStyle='#c98d5e';ctx.beginPath();ctx.arc(0,-20,14,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#2b2420';ctx.beginPath();ctx.arc(0,-14,12,0.1*Math.PI,0.9*Math.PI);ctx.fill();
+  ctx.beginPath();ctx.arc(0,-26,13,Math.PI*1.05,Math.PI*1.95);ctx.fill();
+  ctx.fillStyle='#0a0d0b';ctx.fillRect(-6,-24,3,3);ctx.fillRect(3,-24,3,3);
+  ctx.fillStyle='#f3a83b';ctx.fillRect(-1,-33,2,6);
+  ctx.restore();
+  // name tag
+  ctx.font=font(12*s,700);ctx.fillStyle='rgba(244,234,214,.75)';ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('JINU',x,y+64*s);
+}
+/* Honeybee: giant angry amber bottle */
+function drawHoneybee(x,y,s=1,t=0){
+  ctx.save();ctx.translate(x,y+Math.sin(t*8)*4);ctx.scale(s,s);
+  ctx.fillStyle='#c86a1e';ctx.beginPath();ctx.roundRect(-34,-40,68,110,16);ctx.fill();
+  ctx.fillRect(-14,-78,28,42);
+  ctx.fillStyle='#7a3d10';ctx.fillRect(-16,-88,32,12);
+  ctx.fillStyle='#f6d34a';ctx.beginPath();ctx.roundRect(-28,-6,56,46,6);ctx.fill();
+  ctx.fillStyle='#1a1408';for(let i=0;i<3;i++)ctx.fillRect(-28,2+i*14,56,5);
+  ctx.fillStyle='#f6d34a';ctx.font=font(13);ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('HONEYBEE',0,-18);
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(-12,-58,7,0,7);ctx.arc(12,-58,7,0,7);ctx.fill();
+  ctx.fillStyle='#b01212';ctx.beginPath();ctx.arc(-11,-57,3.5,0,7);ctx.arc(13,-57,3.5,0,7);ctx.fill();
+  ctx.strokeStyle='#1a1408';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(-20,-68);ctx.lineTo(-5,-63);ctx.moveTo(20,-68);ctx.lineTo(5,-63);ctx.stroke();
+  // wings
+  ctx.fillStyle='rgba(220,240,255,.45)';const f=Math.sin(t*40)*6;
+  ctx.beginPath();ctx.ellipse(-46,-20,18,10+f,-.5,0,7);ctx.ellipse(46,-20,18,10-f,.5,0,7);ctx.fill();
+  ctx.restore();
+}
+
+/* ---------- scenes ---------- */
+let scene='menu',sceneT=0,S=null,last=0,raf=0;
+function setScene(n){scene=n;sceneT=0;$('skip').hidden=!(n==='temple'||n==='travel'||n==='shiver');$('hud').toggleAttribute('data-off',n!=='run')}
+$('skip').onclick=()=>startRun();
+
+function drawTemple(t){
+  const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#2a1a3a');g.addColorStop(1,'#16261c');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  const cx=W/2,base=H*.55,tw=Math.min(W*.8,360);
+  // temple body
+  ctx.fillStyle='#7a4a2a';ctx.fillRect(cx-tw/2,base-110,tw,110);
+  // Kerala sloped roofs
+  ctx.fillStyle='#8a3b22';ctx.beginPath();ctx.moveTo(cx-tw/2-30,base-110);ctx.lineTo(cx,base-180);ctx.lineTo(cx+tw/2+30,base-110);ctx.fill();
+  ctx.fillStyle='#a8462a';ctx.beginPath();ctx.moveTo(cx-tw/3,base-160);ctx.lineTo(cx,base-215);ctx.lineTo(cx+tw/3,base-160);ctx.fill();
+  ctx.fillStyle='#f3c74a';ctx.beginPath();ctx.arc(cx,base-220,6,0,7);ctx.fill();
+  // doorway glow
+  const dg=ctx.createRadialGradient(cx,base-40,5,cx,base-40,70);dg.addColorStop(0,'#ffd27a');dg.addColorStop(1,'#a0562a');
+  ctx.fillStyle=dg;ctx.fillRect(cx-34,base-90,68,90);
+  // flag post
+  ctx.fillStyle='#f3c74a';ctx.fillRect(cx+tw/2-24,base-200,6,200);
+  // lamps
+  for(let i=0;i<5;i++){const lx=cx-tw/2+20+i*(tw-40)/4;ctx.fillStyle='#d9a441';ctx.fillRect(lx-2,base-30,4,30);
+    ctx.fillStyle=`rgba(255,${190+Math.random()*40|0},80,.95)`;ctx.beginPath();ctx.ellipse(lx,base-36,4,7+Math.random()*2,0,0,7);ctx.fill()}
+  // steps
+  ctx.fillStyle='#4a3a2e';for(let i=0;i<4;i++)ctx.fillRect(cx-60-i*14,base+i*12,120+i*28,12);
+  ctx.fillStyle='#2e3b2c';ctx.fillRect(0,base+48,W,H);
+  // Jinu walks out toward viewer
+  const p=Math.min(1,t/1.8);
+  drawJinu(cx,base-30+p*(H*.28),0.7+p*0.5,0,t*8);
+  if(t>1.6){bubble(cx,base-30+H*.28-70*1.2,'Swamiye Saranam Ayyappa!',Math.min(20,W/20))}
+  if(t>4.2)fade((t-4.2)/0.6);
+  if(t>4.8)setScene('travel');
+}
+function drawTravel(t){
+  ctx.fillStyle='#1d3a52';ctx.fillRect(0,0,W,H);
+  const off=t*160;
+  ctx.fillStyle='#244233';
+  for(let i=-1;i<W/90+2;i++){const x=i*90-(off*.4%90);ctx.beginPath();ctx.moveTo(x,H*.62);ctx.lineTo(x+45,H*.4);ctx.lineTo(x+90,H*.62);ctx.fill()}
+  // palms
+  for(let i=-1;i<W/160+2;i++){const x=i*160-(off*.8%160)+40;ctx.fillStyle='#6b4a2a';ctx.fillRect(x,H*.42,6,H*.24);
+    ctx.fillStyle='#3e7a3a';for(let k=0;k<5;k++){ctx.beginPath();ctx.ellipse(x+3,H*.42,30,7,k*0.63,0,7);ctx.fill()}}
+  ctx.fillStyle='#3a3a36';ctx.fillRect(0,H*.66,W,H);
+  ctx.fillStyle='#f4ead6';for(let i=-1;i<W/60+2;i++)ctx.fillRect(i*60-(off%60),H*.78,30,4);
+  const hours=Math.min(8,t/3*8);
+  // clock
+  ctx.fillStyle='rgba(14,23,18,.7)';ctx.beginPath();ctx.roundRect(12,12,150,44,10);ctx.fill();
+  ctx.fillStyle='#f3a83b';ctx.font=font(20);ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(`Walking: ${hours.toFixed(1)} hrs`,24,35);
+  drawJinu(W*.35,H*.62,1,0,t*10);
+  if(t<3)caption('Off to Kudi...',H*.2,26,'#f4ead6');
+  else{
+    // Kudi sign arrives
+    const sx=W+60-(t-3)*220,signX=Math.max(W*.68,sx);
+    ctx.fillStyle='#6b4a2a';ctx.fillRect(signX-3,H*.42,6,H*.24);
+    ctx.fillStyle='#1e6b3a';ctx.beginPath();ctx.roundRect(signX-55,H*.36,110,46,6);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font=font(24);ctx.textAlign='center';ctx.fillText('KUDI',signX,H*.36+24);
+    caption('8 hours later...',H*.2,30);
+  }
+  if(t>5.2)setScene('shiver');
+}
+function drawShiver(t){
+  ctx.fillStyle='#16261c';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#1e6b3a';ctx.beginPath();ctx.roundRect(W/2-70,H*.08,140,50,8);ctx.fill();
+  ctx.fillStyle='#fff';ctx.font=font(28);ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('KUDI',W/2,H*.08+26);
+  const shake=Math.min(30,t*14);
+  const jx=(Math.random()-.5)*shake*.15;
+  drawJinu(W/2+jx,H*.55,1.9,shake,0);
+  if(t>0.6)bubble(W/2,H*.55-80,'Why are my hands shivering?!',Math.min(18,W/22));
+  ctx.fillStyle='rgba(244,234,214,.9)';ctx.font=font(22);ctx.fillText('brrr  brrr  brrr',W/2,H*.88);
+  if(t>2.6){
+    const p=Math.min(1,(t-2.6)/0.8);drawHoneybee(W*0.82,H+120-p*200,1,t);
+    caption('HONEYBEE has spotted Jinu!',H*.22,24,'#e0663f');
+  }
+  if(t>4.4)startRun();
+}
+function fade(p){ctx.fillStyle=`rgba(0,0,0,${Math.min(1,p)})`;ctx.fillRect(0,0,W,H)}
+
+/* ---------- runner ---------- */
+function laneW(){return Math.min(W/3,140)}
+function laneX(i){return W/2+(i-1)*laneW()}
+const OB=['auto','cow','barrier','bus'];
+function startRun(){
+  setScene('run');
+  S={lane:1,lx:1,dist:0,score:0,gap:100,items:[],spawn:0.6,inv:0,t:0,road:0,boost:0,bx:W/2};
+}
+function spawnRow(){
+  const free=Math.floor(Math.random()*3);
+  const n=Math.random()<0.35+Math.min(S.dist/GOAL,1)*0.35?2:1;
+  const lanes=[0,1,2].filter(l=>l!==free).sort(()=>Math.random()-.5).slice(0,n);
+  for(const l of lanes){const type=pick(OB);S.items.push({lane:l,y:-80,type,h:type==='bus'?120:60})}
+  const r=Math.random();
+  if(r<0.14&&S.boost<=0)S.items.push({lane:free,y:-80,type:'sani',h:34});
+  else if(r<0.65)S.items.push({lane:free,y:-80,type:'coco',h:30});
+}
+function drawObstacle(o){
+  const x=laneX(o.lane),y=o.y,w=laneW()*0.62;
+  ctx.save();ctx.translate(x,y);
+  if(o.type==='auto'){ctx.fillStyle='#1a1a1a';ctx.beginPath();ctx.roundRect(-w/2,-30,w,60,10);ctx.fill();
+    ctx.fillStyle='#f2c230';ctx.beginPath();ctx.roundRect(-w/2+4,-6,w-8,34,6);ctx.fill();
+    ctx.fillStyle='#9fd3e8';ctx.fillRect(-w/2+8,-24,w-16,14);ctx.fillStyle='#111';ctx.font=font(11);ctx.textAlign='center';ctx.fillText('AUTO',0,14)}
+  else if(o.type==='cow'){ctx.fillStyle='#f1ede4';ctx.beginPath();ctx.roundRect(-w/2,-22,w,44,16);ctx.fill();
+    ctx.fillStyle='#2b2420';ctx.beginPath();ctx.arc(-w/5,-6,7,0,7);ctx.arc(w/6,8,9,0,7);ctx.fill();
+    ctx.fillStyle='#f1ede4';ctx.beginPath();ctx.arc(0,-30,12,0,7);ctx.fill();ctx.strokeStyle='#d9c79e';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(-8,-38);ctx.lineTo(-14,-46);ctx.moveTo(8,-38);ctx.lineTo(14,-46);ctx.stroke();
+    ctx.fillStyle='#111';ctx.fillRect(-5,-32,3,3);ctx.fillRect(3,-32,3,3)}
+  else if(o.type==='barrier'){for(let i=0;i<5;i++){ctx.fillStyle=i%2?'#f4ead6':'#e0663f';ctx.fillRect(-w/2+i*w/5,-12,w/5,24)}
+    ctx.fillStyle='#555';ctx.fillRect(-w/2,12,4,14);ctx.fillRect(w/2-4,12,4,14)}
+  else if(o.type==='bus'){ctx.fillStyle='#b8322a';ctx.beginPath();ctx.roundRect(-w/2,-60,w,120,10);ctx.fill();
+    ctx.fillStyle='#9fd3e8';ctx.fillRect(-w/2+6,-52,w-12,16);ctx.fillStyle='#f3c74a';ctx.fillRect(-w/2,-6,w,8);
+    ctx.fillStyle='#fff';ctx.font=font(12);ctx.textAlign='center';ctx.fillText('BUS',0,24)}
+  else if(o.type==='sani'){const g=ctx.createRadialGradient(0,0,4,0,0,30);g.addColorStop(0,'rgba(120,200,255,.55)');g.addColorStop(1,'rgba(120,200,255,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(0,0,30,0,7);ctx.fill();
+    ctx.fillStyle='#e8f4fb';ctx.beginPath();ctx.roundRect(-11,-10,22,30,5);ctx.fill();
+    ctx.fillStyle='#2f86c8';ctx.fillRect(-11,0,22,10);ctx.fillStyle='#fff';ctx.font=font(7);ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('SANI',0,5);
+    ctx.fillStyle='#2f86c8';ctx.fillRect(-3,-18,6,8);ctx.fillRect(-3,-20,12,4)}
+  else{ctx.fillStyle='#5fae58';ctx.beginPath();ctx.ellipse(0,0,15,17,0,0,7);ctx.fill();
+    ctx.fillStyle='#86d07a';ctx.beginPath();ctx.ellipse(-5,-5,6,7,0,0,7);ctx.fill();
+    ctx.fillStyle='#f4ead6';ctx.beginPath();ctx.ellipse(0,-14,6,3,0,0,7);ctx.fill();
+    ctx.strokeStyle='#d9c79e';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(2,-15);ctx.lineTo(8,-28);ctx.stroke()}
+  ctx.restore();
+}
+function updateRun(dt){
+  S.t+=dt;
+  S.boost=Math.max(0,S.boost-dt);
+  const v=Math.min(600,280+S.dist*0.14)*(S.boost>0?1.6:1);
+  S.road+=v*dt;S.dist+=v*dt/14;
+  S.lx+=(S.lane-S.lx)*Math.min(1,dt*14);
+  S.inv=Math.max(0,S.inv-dt);
+  S.gap=Math.min(100,S.gap+dt*(S.boost>0?22:3));
+  // Honeybee chases: slides after Jinu's lane with a lag
+  S.bx+=(laneX(S.lx)-S.bx)*Math.min(1,dt*3.5);
+  S.spawn-=dt;if(S.spawn<=0){spawnRow();S.spawn=Math.max(0.45,1.1-S.dist/GOAL*0.6)}
+  const jy=H*.6,jx=laneX(S.lx);
+  for(const o of S.items){o.y+=v*dt;
+    if(o.done)continue;
+    if(Math.abs(laneX(o.lane)-jx)<laneW()*0.4&&Math.abs(o.y-jy)<o.h/2+26){
+      if(o.type==='coco'){o.done=true;S.score++;S.gap=Math.min(100,S.gap+8);toast(pick(coconutLines))}
+      else if(o.type==='sani'){o.done=true;S.boost=3.5;toast(pick(["Hands sanitized, hands steady!","Sanitizer rub: no more shaking!","Clean hands, turbo legs!"]))}
+      else if(S.boost>0){o.done=true;o.smash=1;toast('Out of the way!')}
+      else if(S.inv<=0){o.done=true;S.gap-=34;S.inv=1.1;toast(pick(hitLines))}
+    }}
+  S.items=S.items.filter(o=>o.y<H+140&&!(o.done&&(o.type==='coco'||o.type==='sani'||o.smash)));
+  $('dist').textContent=Math.floor(S.dist);$('score').textContent=S.score;$('fill').style.width=Math.max(0,S.gap)+'%';
+  if(S.gap<=0)return endRun(false);
+  if(S.dist>=GOAL)return endRun(true);
+}
+function drawRun(){
+  ctx.fillStyle='#2b4a2e';ctx.fillRect(0,0,W,H);
+  const lw=laneW(),rx=W/2-lw*1.5;
+  ctx.fillStyle='#3a3a36';ctx.fillRect(rx,0,lw*3,H);
+  ctx.fillStyle='#f3c74a';ctx.fillRect(rx-4,0,4,H);ctx.fillRect(rx+lw*3,0,4,H);
+  ctx.fillStyle='rgba(244,234,214,.6)';
+  for(let k=1;k<3;k++)for(let y=-40+(S.road%60);y<H;y+=60)ctx.fillRect(rx+lw*k-2,y,4,30);
+  // roadside palms
+  for(let y=-80+(S.road*.9%140);y<H;y+=140)for(const sx of [rx-28,rx+lw*3+28]){if(sx<0||sx>W)continue;
+    ctx.fillStyle='#3e7a3a';for(let k=0;k<5;k++){ctx.beginPath();ctx.ellipse(sx,y,22,6,k*0.63,0,7);ctx.fill()}}
+  for(const o of S.items)drawObstacle(o);
+  const jy=H*.6,jx=laneX(S.lx);
+  const fear=(100-S.gap)/100;
+  if(S.boost>0){
+    ctx.strokeStyle='rgba(140,210,255,.7)';ctx.lineWidth=3;
+    for(let i=0;i<6;i++){const sx=jx-24+i*10,sy=jy+30+((S.t*900+i*37)%60);ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(sx,sy+26);ctx.stroke()}
+    const g=ctx.createRadialGradient(jx,jy,8,jx,jy,60);g.addColorStop(0,'rgba(120,200,255,.35)');g.addColorStop(1,'rgba(120,200,255,0)');ctx.fillStyle=g;ctx.beginPath();ctx.arc(jx,jy,60,0,7);ctx.fill();
+  }
+  if(!(S.inv>0&&Math.floor(S.inv*12)%2))drawJinu(jx,jy,0.8,S.boost>0?0:4+fear*20,S.t*(S.boost>0?26:16));
+  // Honeybee always on screen behind Jinu: far = bottom edge, close = right on his heels
+  const near=jy+70,far=H-20;
+  const by=near+(far-near)*Math.max(0,S.gap)/100;
+  drawHoneybee(S.bx,by,0.9,S.t);
+  if(S.gap<55&&Math.floor(S.t*2)%2===0){ctx.font=font(14);ctx.fillStyle='#f6d34a';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('Jinuuu, come back!',S.bx,by-110*0.9)}
+  if(S.boost>0){ctx.font=font(18);ctx.fillStyle='#8cd2ff';ctx.textAlign='left';ctx.textBaseline='top';ctx.fillText(`BOOST ${S.boost.toFixed(1)}s`,rx+8,10)}
+  if(S.gap<40){ctx.fillStyle='rgba(224,102,63,.18)';ctx.fillRect(0,0,W,H)}
+  // finish banner
+  if(GOAL-S.dist<120){const y=jy-(GOAL-S.dist)*14;ctx.fillStyle='#f3a83b';ctx.fillRect(rx,y-10,lw*3,20);ctx.fillStyle='#0e1712';ctx.font=font(14);ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('TEMPLE AHEAD',W/2,y)}
+}
+function endRun(win){
+  const d=Math.floor(S.dist);if(d>best){best=d;try{localStorage.setItem('jinuBest',best)}catch(e){}}
+  setScene('end');$('hud').removeAttribute('data-off');
+  $('card').innerHTML=win
+   ?`<h1>Jinu is safe!</h1><p>He ran ${GOAL} m back to the temple with ${S.score} tender coconuts. Honeybee isn't allowed inside.</p><button id="go">Play again</button><p class="small" id="best"></p>`
+   :`<h1>Honeybee caught Jinu!</h1><p>Caught after ${d} m with ${S.score} coconuts. Send this to Jinu and tell him to run faster.</p><button id="go">Try again</button><p class="small" id="best"></p>`;
+  showBest();$('overlay').hidden=false;$('go').onclick=begin;$('go').focus();
+}
+
+/* ---------- input ---------- */
+function move(d){if(scene==='run')S.lane=Math.max(0,Math.min(2,S.lane+d))}
+addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(k==='arrowleft'||k==='a')move(-1);if(k==='arrowright'||k==='d')move(1)});
+let px=null,py=null;
+cv.addEventListener('pointerdown',e=>{px=e.clientX;py=e.clientY});
+cv.addEventListener('pointerup',e=>{if(px==null)return;const dx=e.clientX-px;
+  if(Math.abs(dx)>30)move(dx>0?1:-1);else{const r=cv.getBoundingClientRect();move(e.clientX-r.left<r.width/2?-1:1)}px=null});
+
+/* ---------- loop ---------- */
+function begin(){$('overlay').hidden=true;setScene('temple');last=performance.now()}
+$('go').onclick=begin;
+function loop(now){
+  const dt=Math.min((now-last)/1000||0,0.05);last=now;sceneT+=dt;
+  if(cv.width!==Math.round(stage.clientWidth*Math.min(devicePixelRatio||1,2)))resize();
+  if(scene==='menu'){drawTemple(0.2);}
+  else if(scene==='temple')drawTemple(sceneT);
+  else if(scene==='travel')drawTravel(sceneT);
+  else if(scene==='shiver')drawShiver(sceneT);
+  else if(scene==='run'){updateRun(dt);if(scene==='run')drawRun()}
+  else if(scene==='end'&&S)drawRun();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+})();
+</script>
+
+</body>
+</html>
